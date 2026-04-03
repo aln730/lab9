@@ -1,352 +1,215 @@
-            TTL Lab 9 UART Queue
+TTL Program Title for Listing Header Goes Here
 ;****************************************************************
-; This program implements a UART interrupt-driven command system
-; with a circular queue.
-;
-; Name: <Your Name>
-; Date: <Date>
+; CMPE-250 Lab 9 - Serial I/O Driver
+; Name:  <Your name here>
+; Date:  <Date completed here>
 ; Class: CMPE-250
-; Section: <Section>
+; Section: <Your section>
 ;****************************************************************
 
             THUMB
-            OPT 64
-            GET MKL05Z4.s
-            OPT 1
+            OPT    64
+
+            GET  MKL05Z4.s
+            OPT  1
 
 ;****************************************************************
-; EQUATES
+;EQUates
 ;****************************************************************
-QUEUE_SIZE EQU 16
+
+; UART status masks
+UART0_RDRF_MASK EQU 0x20
+UART0_TDRE_MASK EQU 0x80
 
 ;****************************************************************
-; CODE
+;Program
 ;****************************************************************
-            AREA MyCode,CODE,READONLY
+
+            AREA    MyCode,CODE,READONLY
             ENTRY
-            EXPORT Reset_Handler
-            IMPORT Startup
+            EXPORT  Reset_Handler
+            IMPORT  Startup
 
-Reset_Handler PROC {}
-
+Reset_Handler  PROC  {}
 main
-            CPSID I
-            BL Startup
-
 ;---------------------------------------------------------------
-; Enable PORTB + UART0 clocks
+            CPSID   I
+            BL      Startup
 ;---------------------------------------------------------------
-            LDR R0, =SIM_BASE
 
-            ; PORTB clock
-            LDR R1, [R0, #SIM_SCGC5_OFFSET]
-            LDR R2, =SIM_SCGC5_PORTB_MASK
-            ORRS R1, R1, R2
-            STR R1, [R0, #SIM_SCGC5_OFFSET]
+            BL      UART_Init
 
-            ; UART0 clock
-            LDR R1, [R0, #SIM_SCGC4_OFFSET]
-            LDR R2, =SIM_SCGC4_UART0_MASK
-            ORRS R1, R1, R2
-            STR R1, [R0, #SIM_SCGC4_OFFSET]
+MainLoop
+            BL      PrintMenu
+            BL      GetChar
 
-;---------------------------------------------------------------
-; UART clock source
-;---------------------------------------------------------------
-            LDR R1, [R0, #SIM_SOPT2_OFFSET]
-            LDR R2, =SIM_SOPT2_UART0SRC_MCGFLLCLK
-            ORRS R1, R1, R2
-            STR R1, [R0, #SIM_SOPT2_OFFSET]
+            CMP     R0, #'D'
+            BEQ     HandleD
 
-;---------------------------------------------------------------
-; UART pins (PTB1 TX, PTB2 RX)
-;---------------------------------------------------------------
-            LDR R0, =PORTB_BASE
+            CMP     R0, #'E'
+            BEQ     HandleE
 
-            LDR R1, =PORT_PCR_SET_PTB1_UART0_TX
-            STR R1, [R0, #PORT_PCR1_OFFSET]
+            CMP     R0, #'H'
+            BEQ     HandleH
 
-            LDR R1, =PORT_PCR_SET_PTB2_UART0_RX
-            STR R1, [R0, #PORT_PCR2_OFFSET]
+            CMP     R0, #'P'
+            BEQ     HandleP
 
-;---------------------------------------------------------------
-; UART init
-;---------------------------------------------------------------
-            LDR R0, =UART0_BASE
+            CMP     R0, #'S'
+            BEQ     HandleS
 
-            MOVS R1, #0
-            STRB R1, [R0, #UART0_C2_OFFSET]
+            B       MainLoop
 
-            MOVS R1, #UART0_BDH_9600
-            STRB R1, [R0, #UART0_BDH_OFFSET]
+;---------------- UART INIT ----------------
 
-            MOVS R1, #UART0_BDL_9600
-            STRB R1, [R0, #UART0_BDL_OFFSET]
+UART_Init
+            PUSH    {R0-R2, LR}
 
-            MOVS R1, #UART0_C1_8N1
-            STRB R1, [R0, #UART0_C1_OFFSET]
+            ; Enable UART0 clock (SIM_SCGC4)
+            LDR     R0, =SIM_SCGC4
+            LDR     R1, [R0]
+            LDR     R2, =SIM_SCGC4_UART0_MASK
+            ORRS    R1, R1, R2
+            STR     R1, [R0]
 
-; Enable RX interrupt
-            MOVS R1, #(UART0_C2_RIE_MASK :OR: UART0_C2_T_R)
-            STRB R1, [R0, #UART0_C2_OFFSET]
+            ; Select clock source
+            LDR     R0, =SIM_SOPT2
+            LDR     R1, [R0]
+            LDR     R2, =SIM_SOPT2_UART0SRC_MASK
+            BICS    R1, R1, R2
+            LDR     R2, =SIM_SOPT2_UART0SRC(1)
+            ORRS    R1, R1, R2
+            STR     R1, [R0]
 
-; Enable NVIC
-            LDR R0, =NVIC_ISER
-            LDR R1, =UART0_IRQ_MASK
-            STR R1, [R0]
+            POP     {R0-R2, LR}
+            BX      LR
 
-            CPSIE I
+;---------------- GET CHAR ----------------
 
-;---------------------------------------------------------------
-; Initialize queue indices
-;---------------------------------------------------------------
-            LDR R0, =QHead
-            MOVS R1, #0
-            STR R1, [R0]
+GetChar
+WaitRx
+            LDR     R1, =UART0_BASE
+            LDR     R2, [R1, #UART0_S1_OFFSET]
+            ANDS    R2, R2, #UART0_RDRF_MASK
+            CMP     R2, #0
+            BEQ     WaitRx
 
-            LDR R0, =QTail
-            STR R1, [R0]
+            LDRB    R0, [R1, #UART0_D_OFFSET]
+            BX      LR
 
-            LDR R0, =QCount
-            STR R1, [R0]
+;---------------- PUT CHAR ----------------
 
-;---------------------------------------------------------------
-; Print prompt once
-;---------------------------------------------------------------
-            BL PrintPrompt
+PutChar
+WaitTx
+            LDR     R1, =UART0_BASE
+            LDR     R2, [R1, #UART0_S1_OFFSET]
+            ANDS    R2, R2, #UART0_TDRE_MASK
+            CMP     R2, #0
+            BEQ     WaitTx
 
-Loop
-            B Loop
+            STRB    R0, [R1, #UART0_D_OFFSET]
+            BX      LR
+
+;---------------- PRINT STRING ----------------
+
+PrintString
+            PUSH    {R1-R2, LR}
+
+NextChar
+            LDRB    R1, [R0]
+            CMP     R1, #0
+            BEQ     Done
+
+            MOV     R0, R1
+            BL      PutChar
+
+            ADDS    R0, R0, #1
+            B       NextChar
+
+Done
+            POP     {R1-R2, LR}
+            BX      LR
+
+;---------------- MENU ----------------
+
+PrintMenu
+            PUSH    {LR}
+            LDR     R0, =MenuText
+            BL      PrintString
+            POP     {LR}
+            BX      LR
+
+MenuText DCB "Type a queue command (D,E,H,P,S): ",0
+
+;---------------- HANDLERS ----------------
+
+HandleD
+            LDR     R0, =MsgD
+            BL      PrintString
+            B       MainLoop
+
+HandleE
+            LDR     R0, =MsgE
+            BL      PrintString
+            B       MainLoop
+
+HandleH
+            LDR     R0, =MsgH
+            BL      PrintString
+            B       MainLoop
+
+HandleP
+            LDR     R0, =MsgP
+            BL      PrintString
+            B       MainLoop
+
+HandleS
+            LDR     R0, =MsgS
+            BL      PrintString
+            B       MainLoop
+
+;---------------- MESSAGES ----------------
+
+MsgD DCB "D selected",13,10,0
+MsgE DCB "E selected",13,10,0
+MsgH DCB "H selected",13,10,0
+MsgP DCB "P selected",13,10,0
+MsgS DCB "S selected",13,10,0
 
             ENDP
 
 ;****************************************************************
-; DATA
+; Vector Table
 ;****************************************************************
-            AREA MyData,DATA,READWRITE
 
-Queue       SPACE QUEUE_SIZE
-QHead       DCD 0
-QTail       DCD 0
-QCount      DCD 0
+            AREA    RESET, DATA, READONLY
+            EXPORT  __Vectors
+            EXPORT  __Vectors_End
+            EXPORT  __Vectors_Size
+            IMPORT  __initial_sp
+            IMPORT  Dummy_Handler
+            IMPORT  HardFault_Handler
 
-CmdBuffer   SPACE 8
-CmdIndex    DCD 0
+__Vectors 
+            DCD    __initial_sp
+            DCD    Reset_Handler
+            DCD    Dummy_Handler
+            DCD    HardFault_Handler
+            DCD    Dummy_Handler
+            DCD    Dummy_Handler
+            DCD    Dummy_Handler
+            DCD    Dummy_Handler
+            DCD    Dummy_Handler
+            DCD    Dummy_Handler
+            DCD    Dummy_Handler
+            DCD    Dummy_Handler
+            DCD    Dummy_Handler
+            DCD    Dummy_Handler
+            DCD    Dummy_Handler
+            DCD    Dummy_Handler
 
-;****************************************************************
-; UART Interrupt Handler
-;****************************************************************
-            AREA MyCode,CODE,READONLY
-            EXPORT UART0_IRQHandler
-
-UART0_IRQHandler PROC
-            PUSH {R0-R3, LR}
-
-            LDR R0, =UART0_BASE
-
-; Check RX flag
-            LDRB R1, [R0, #UART0_S1_OFFSET]
-            TST R1, #UART0_S1_RDRF_MASK
-            BEQ DoneISR
-
-; Read char
-            LDRB R2, [R0, #UART0_D_OFFSET]
-
-; Echo
-WaitTX
-            LDRB R1, [R0, #UART0_S1_OFFSET]
-            TST R1, #UART0_S1_TDRE_MASK
-            BEQ WaitTX
-            STRB R2, [R0, #UART0_D_OFFSET]
-
-; Store command
-            CMP R2, #10
-            BEQ HandleCommand
-
-            LDR R3, =CmdBuffer
-            LDR R1, =CmdIndex
-            LDR R0, [R1]
-
-            STRB R2, [R3, R0]
-            ADDS R0, R0, #1
-            STR R0, [R1]
-            B DoneISR
-
-HandleCommand
-            BL ProcessCommand
-
-DoneISR
-            POP {R0-R3, LR}
-            BX LR
-            ENDP
-
-;****************************************************************
-; Print Prompt
-;****************************************************************
-PrintPrompt PROC
-            PUSH {R0-R2, LR}
-
-            LDR R0, =UART0_BASE
-            LDR R1, =Prompt
-
-PrintLoop
-            LDRB R2, [R1], #1
-            CMP R2, #0
-            BEQ DonePrint
-
-WaitTX2
-            LDRB R3, [R0, #UART0_S1_OFFSET]
-            TST R3, #UART0_S1_TDRE_MASK
-            BEQ WaitTX2
-
-            STRB R2, [R0, #UART0_D_OFFSET]
-            B PrintLoop
-
-DonePrint
-            POP {R0-R2, LR}
-            BX LR
-            ENDP
-
-Prompt DCB "Type a queue command (D,E,H,P,S): ",0
-
-;****************************************************************
-; Process Command
-;****************************************************************
-ProcessCommand PROC
-            PUSH {R0-R3, LR}
-
-            LDR R0, =CmdBuffer
-            LDRB R1, [R0]
-
-            CMP R1, #'E'
-            BEQ EnqCmd
-            CMP R1, #'D'
-            BEQ DeqCmd
-            CMP R1, #'P'
-            BEQ PrintCmd
-            CMP R1, #'H'
-            BEQ HelpCmd
-            CMP R1, #'S'
-            BEQ StatusCmd
-
-            B DoneCmd
-
-EnqCmd
-            BL Enqueue
-            B DoneCmd
-
-DeqCmd
-            BL Dequeue
-            B DoneCmd
-
-PrintCmd
-            B DoneCmd
-
-HelpCmd
-            B DoneCmd
-
-StatusCmd
-            B DoneCmd
-
-DoneCmd
-            LDR R0, =CmdIndex
-            MOVS R1, #0
-            STR R1, [R0]
-
-            POP {R0-R3, LR}
-            BX LR
-            ENDP
-
-;****************************************************************
-; Enqueue
-;****************************************************************
-Enqueue PROC
-            PUSH {R0-R3, LR}
-
-            LDR R0, =QCount
-            LDR R1, [R0]
-            CMP R1, #QUEUE_SIZE
-            BGE DoneEnq
-
-            LDR R0, =Queue
-            LDR R2, =QTail
-            LDR R3, [R2]
-
-            MOVS R4, #'A'
-            STRB R4, [R0, R3]
-
-            ADDS R3, R3, #1
-            CMP R3, #QUEUE_SIZE
-            BLT SkipWrap
-            MOVS R3, #0
-SkipWrap
-            STR R3, [R2]
-
-            ADDS R1, R1, #1
-            LDR R0, =QCount
-            STR R1, [R0]
-
-DoneEnq
-            POP {R0-R3, LR}
-            BX LR
-            ENDP
-
-;****************************************************************
-; Dequeue
-;****************************************************************
-Dequeue PROC
-            PUSH {R0-R3, LR}
-
-            LDR R0, =QCount
-            LDR R1, [R0]
-            CMP R1, #0
-            BEQ DoneDeq
-
-            LDR R0, =Queue
-            LDR R2, =QHead
-            LDR R3, [R2]
-
-            LDRB R4, [R0, R3]
-
-; transmit char
-WaitTX3
-            LDR R0, =UART0_BASE
-            LDRB R1, [R0, #UART0_S1_OFFSET]
-            TST R1, #UART0_S1_TDRE_MASK
-            BEQ WaitTX3
-
-            STRB R4, [R0, #UART0_D_OFFSET]
-
-            ADDS R3, R3, #1
-            CMP R3, #QUEUE_SIZE
-            BLT SkipWrap2
-            MOVS R3, #0
-SkipWrap2
-            STR R3, [R2]
-
-            SUBS R1, R1, #1
-            LDR R0, =QCount
-            STR R1, [R0]
-
-DoneDeq
-            POP {R0-R3, LR}
-            BX LR
-            ENDP
-
-;****************************************************************
-; VECTOR TABLE (UNCHANGED)
-;****************************************************************
-            AREA RESET, DATA, READONLY
-            EXPORT __Vectors
-
-__Vectors
-            DCD __initial_sp
-            DCD Reset_Handler
-            DCD Dummy_Handler
-            DCD HardFault_Handler
-            ; rest unchanged...
-            DCD Dummy_Handler
-            DCD UART0_IRQHandler
+__Vectors_End
+__Vectors_Size  EQU     __Vectors_End - __Vectors
 
             ALIGN
             END
